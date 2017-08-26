@@ -1,0 +1,142 @@
+// This file is part of www.nAnd2tetris.Org
+// And the book "The Elements of Computing Systems"
+// by Nisan And Schocken, MIT Press.
+// File name: projects/05/CPU.hdl
+
+/**
+ * The Hack CPU (Central Processing unit), consisting of an ALU,
+ * two registers named A And D, And a program counter named PC.
+ * The CPU is designed to fetch And execute instructions written in 
+ * the Hack machine language. In particular, functions as follows:
+ * Executes the inputted instruction accOrding to the Hack machine 
+ * language specification. The D And A in the language specification
+ * refer to CPU-resident registers, while M refers to the external
+ * memOry location addressed by A, i.e. to MemOry[A]. The inM input 
+ * holds the value of this location. If the current instruction needs 
+ * to write a value to M, the value is placed in outM, the address 
+ * of the target location is placed in the addressM output, And the 
+ * writeM control bit is asserted. (When writeM==0, any value may 
+ * appear in outM). The outM And writeM outputs are combinational: 
+ * they are affected instantaneously by the execution of the current 
+ * instruction. The addressM And pc outputs are clocked: although they 
+ * are affected by the execution of the current instruction, they commit 
+ * to their new values only in the next time step. If reset==1 then the 
+ * CPU jumps to address 0 (i.e. pc is set to 0 in next time step) rather 
+ * than to the address resulting from executing the current instruction. 
+ */
+
+CHIP CPU {
+
+    IN  inM[16],         // M value input  (M = contents of RAM[A])
+        instruction[16], // Instruction fOr execution
+        reset;           // Signals whether to re-start the current
+                         // program (reset==1) Or continue executing
+                         // the current program (reset==0).
+
+    OUT outM[16],        // M value output
+        writeM,          // Write to M? 
+        addressM[15],    // Address in data memOry (of M)
+        pc[15];          // address of next instruction
+
+    PARTS:
+
+    // Instruction types
+    Not(in=instruction[15], out=aType);
+    Not(in=aType, out=cType);
+
+    ARegister(in=regAin, load=loadA, out=regAout);
+
+    DRegister(in=ALUout, load=loadD, out=ALUinput0);
+    
+    // Instruction types (opcode = i):
+    // a 16-bit iccc cccc cccc cccc -> i = 0
+    // c 16-bit ixxa cccc ccdd djjj -> i = 1
+
+    // A-TYPE
+    // The remaining bits 14bits (0-14) must be placed in A register
+    // Set data to RegA
+    And(a=cType, b=instruction[5], out=ALUtoA);
+    Mux16(a=instruction, b=ALUout, sel=ALUtoA, out=regAin);
+    
+    
+    // C-TYPE
+    // ixxa cccc ccdd djjj - ixxa cccc ccd1d2 d3jjj
+    // i - opcode
+    // a - set ALU to operate with A register Or M input
+    // c - ALU function
+    // d - destination register
+    // j - branch control 
+    // x - not used
+
+    // IF d1 == 1 - Load of RegA have to be 1
+    Or(a=aType, b=instruction[5], out=loadA);
+
+    // IF d2 = 1 - Load of RegD have to be 1
+    And(a=cType, b=instruction[4], out=loadD);
+
+    // IF d3 = 1 - WriteM have to be 1
+    And(a=cType, b=instruction[3], out=writeM);
+
+    // Set data to ALU
+    Mux16(a=regAout, b=inM, sel=instruction[12], out=ALUinput1);
+
+     
+    // ALU
+    ALU(
+        x  = ALUinput0, y = ALUinput1,
+        zx = instruction[11],
+        nx = instruction[10],
+        zy = instruction[9],
+        ny = instruction[8],
+        f  = instruction[7],
+        no = instruction[6],
+        out = ALUout,
+        zr = zrOut,
+        ng = ngOut
+    );   
+
+    // HOW TO DO A BRANCH?
+    // ZR = 1 -> ALU out = 0
+    // NG = 1 -> ALU out < 0
+    //
+    // JUMP TABLE + ALU ZR, NG
+    // -----------------------
+    // CASE | J3  J2  J1   | ZR NG  | jump condition
+    //   1  |  0   0   0   | ?   ?  | NONE : not jump
+    //   2  |  0   0   1   | 0   0  | JGT  : out > 0
+    //   3  |  0   1   0   | 1   0  | JEQ  : out = 0          
+    //   4  |  0   1   1   | ?   0  | JGE  : out >= 0         
+    //   5  |  1   0   0   | 0   1  | JLT  : out < 0          
+    //   6  |  1   0   1   | 0   ?  | JNE  : out != 0
+    //   7  |  1   1   0   | ?   1  | JLE  : out <= 0
+    //   8  |  1   1   1   | ?   ?  | JMP  : incoditional
+
+    Not(in=zrOut, out=zrOutNeg);
+    Not(in=ngOut, out=ngOutNeg);
+
+    Or(a=zrOut, b=ngOut, out=zrORNg);
+    Not(in=zrORNg, out=pos);
+
+    And(a=zrOut, b=instruction[1], out=JEQ);
+    And(a=ngOut, b=instruction[2], out=JLT);
+    And(a=pos,   b=instruction[0], out=JGT);
+    Or(a=JEQ,    b=JGT,            out=JGE);
+    Or(a=JEQ,    b=JLT,            out=JLE);
+    Or(a=pos,    b=JLT,            out=JNE);
+    Or(a=JGE,    b=JLE,            out=JMP);
+
+    And(a=cType, b=JMP, out= doBranch);
+    Not(in=doBranch, out=doInc);
+
+    // PC
+    PC( in=regAout, 
+        load=doBranch,
+        inc=doInc,
+        reset=reset,
+        out[0..14]=pc
+    );
+
+    // Exporting pins
+   Or16(a=ALUout, b=false, out=outM);
+   Or16(a=regAout, b=false, out[0..14]=addressM);
+}

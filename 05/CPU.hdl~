@@ -1,0 +1,173 @@
+// This file is part of www.nAnd2tetris.Org
+// And the book "The Elements of Computing Systems"
+// by Nisan And Schocken, MIT Press.
+// File name: projects/05/CPU.hdl
+
+/**
+ * The Hack CPU (Central Processing unit), consisting of an ALU,
+ * two registers named A And D, And a program counter named PC.
+ * The CPU is designed to fetch And execute instructions written in 
+ * the Hack machine language. In particular, functions as follows:
+ * Executes the inputted instruction accOrding to the Hack machine 
+ * language specification. The D And A in the language specification
+ * refer to CPU-resident registers, while M refers to the external
+ * memOry location addressed by A, i.e. to MemOry[A]. The inM input 
+ * holds the value of this location. If the current instruction needs 
+ * to write a value to M, the value is placed in outM, the address 
+ * of the target location is placed in the addressM output, And the 
+ * writeM control bit is asserted. (When writeM==0, any value may 
+ * appear in outM). The outM And writeM outputs are combinational: 
+ * they are affected instantaneously by the execution of the current 
+ * instruction. The addressM And pc outputs are clocked: although they 
+ * are affected by the execution of the current instruction, they commit 
+ * to their new values only in the next time step. If reset==1 then the 
+ * CPU jumps to address 0 (i.e. pc is set to 0 in next time step) rather 
+ * than to the address resulting from executing the current instruction. 
+ */
+
+CHIP CPU {
+
+    IN  inM[16],         // M value input  (M = contents of RAM[A])
+        instruction[16], // Instruction fOr execution
+        reset;           // Signals whether to re-start the current
+                         // program (reset==1) Or continue executing
+                         // the current program (reset==0).
+
+    OUT outM[16],        // M value output
+        writeM,          // Write to M? 
+        addressM[15],    // Address in data memOry (of M)
+        pc[15];          // address of next instruction
+
+    PARTS:
+
+    // A register
+    ARegister(in=regAin, load=loadA, out=regAout);
+
+    // D register
+    DRegister(in=ALUout, load=loadB, out=ALUinput1);
+    
+    // Instruction types (opcode = i):
+    // a 16-bit iccc cccc cccc cccc -> i = 0
+    // c 16-bit ixxa cccc ccdd djjj -> i = 1
+
+    // TYPE-A
+    // The remaining bits 14bits (0-14) must be placed in A register
+    // Set data to RegA
+    Mux16(a=instruction, b=ALUout, sel=instruction[15], out=regAin);
+    
+    // Load of A register have to be 1 in TYPE-A instruction
+    Not(in=instruction[15], out=opNeg);
+    
+    
+    // TYPE-C
+    // ixxa cccc ccdd djjj - ixxa cccc ccd1d2 d3jjj
+    // i - opcode
+    // a - set ALU to operate with A register Or M input
+    // c - ALU function
+    // d - destination register
+    // j - branch control 
+    // x - not used
+
+    // IF d1 == 1 - Load of RegA have to be 1
+    Or(a=opNeg, b=instruction[5], out=loadA);
+
+    // IF d2 = 1 - Load of RegB have to be 1
+    And(a=instruction[15], b=instruction[4], out=loadB);
+
+    // IF d3 = 1 - WriteM have to be 1
+    And(a=instruction[15], b=instruction[3], out=writeM);
+
+    // Set data to ALU
+    Mux16(a=inM, b=regAout, sel=instruction[12], out=ALUinput0);
+
+     
+    // ALU
+    ALU(
+        x  = ALUinput0, y = ALUinput1,
+        zx = instruction[11],
+        nx = instruction[10],
+        zy = instruction[9],
+        ny = instruction[8],
+        f  = instruction[7],
+        no = instruction[6],
+        out = ALUout,
+        zr = zero,
+        ng = negative
+    );   
+
+    // HOW TO DO A BRANCH?
+    // ZR = 1 -> ALU out = 0
+    // NG = 1 -> ALU out < 0
+    //
+    // JUMP TABLE + ALU ZR, NG
+    // -----------------------
+    // CASE | J3  J2  J1   | ZR NG  | jump condition
+    //   1  |  0   0   0   | ?   ?  | not jump
+    //   2  |  0   0   1   | 0   0  | out > 0
+    //   3  |  0   1   0   | 1   0  | out = 0          
+    //   4  |  0   1   1   | ?   0  | out >= 0         
+    //   5  |  1   0   0   | 0   1  | out < 0          
+    //   6  |  1   0   1   | 0   ?  | out != 0
+    //   7  |  1   1   0   | ?   1  | out <= 0
+    //   8  |  1   1   1   | ?   ?  | jump
+
+    Not(in=instruction[2], out=j3Neg);
+    Not(in=instruction[1], out=j2Neg);
+    Not(in=instruction[0], out=j1Neg);
+    Not(in=zero, out=zeroNeg);
+    Not(in=negative, out=negativeNeg);
+    
+    // Case 2
+    And(a=j3Neg, b=j2Neg, out=j3NegAndj2Neg);               // j3' & j2'
+    And(a=j3NegAndj2Neg, b=instruction[0], out=c10);        // j3' & j2' & j1
+    And(a=c10, b=zeroNeg, out=c11);                         // j3' & j2' & j1 & zr'
+    And(a=c11, b=negativeNeg, out=case2);                   // j3' & j2' & j1 & zr' & ng'
+
+    // Case 3
+    And(a=j3Neg, b=instruction[1], out=j3NegAndj2);          // j3' & j2
+    And(a=j3NegAndj2, b=j1Neg, out=c20);                     // j3' & j2 & j1'
+    And(a=c20, b=zero, out=case3);                           // j3' & j2 & j1' & zr
+
+    // Case 4
+    And(a=j3NegAndj2, b=instruction[0], out=c30);            // j3' & j2 & j1
+    And(a=c30, b=negativeNeg, out=case4);                    // j3' & j2 & j1' & ng'  
+    
+    // Case 5
+    And(a=instruction[2], b=j2Neg, out=j3Andj2Neg);          // j3 & j2'
+    And(a=j3Andj2Neg, b=j1Neg, out=c40);                     // j3 & j2' & j1'
+    And(a=c40, b=negative, out=case5);                       // j3 & j2' & j1' & ng
+
+    // Case 6
+    And(a=j3Andj2Neg, b=instruction[0], out=c50);            // j3 & j2' & j1
+    And(a=c50, b=zeroNeg, out=case6);                        // j3 & j2' & j1 & zr'
+
+    // Case 7
+    And(a=instruction[2], b=instruction[1], out=j3Andj2);    // j3 & j2
+    And(a=j3Andj2, b=j1Neg, out=c60);                        // j3 & j2 & j1'
+    Or(a=zero, b=negative, out=zeroOrNeg);                   // (zr || ng)
+    And(a=zeroOrNeg, b=c60, out=case7);                      // ( j3 & j2 & j1' ) && (zr || ng)
+
+    // Case 8
+    And(a=j3Andj2, b=instruction[0], out=case8);             // j3 & j2 & j1
+
+    Or (a=case2, b=case3, out=x);
+    Or (a=x, b=case4, out=y);
+    Or (a=y, b=case5, out=z);
+    Or (a=z, b=case6, out=k);
+    Or (a=k, b=case7, out=l);
+    Or (a=l, b=case8, out=doBranch);
+
+    Not(in=doBranch, out=doInc);
+
+    // PC
+    PC( in=regAout, 
+        load=doBranch,
+        inc=doInc,
+        reset=reset,
+        out[0..14]=pc
+    );
+
+    // Exporting pins
+   // Or16(a=ALUout, b=false, out=outM);
+   // Or16(a=regAout, b=false, out[0..14]=addressM);
+}
